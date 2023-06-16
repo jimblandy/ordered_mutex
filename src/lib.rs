@@ -22,84 +22,76 @@ To use this crate:
 
  */
 
-use std::marker::PhantomData;
 use std::cell::Cell;
 
+pub trait Rank: Clone + Default + PartialOrd + Sized + 'static {
+    const CURRENT_RANK: &'static std::thread::LocalKey<ThreadState<Self>>;
+}
+
 pub struct ThreadState<R> {
-    current_rank: Cell<u32>,
-    _rank_type: PhantomData<R>,
+    current_rank: Cell<R>,
 }
 
 impl<R: Rank> ThreadState<R> {
-    pub const fn new() -> Self {
+    pub const fn new(init: R) -> Self {
         ThreadState {
-            current_rank: Cell::new(0),
-            _rank_type: PhantomData,
+            current_rank: Cell::new(init),
         }
     }
 }
 
 impl<R: Rank> ThreadState<R> {
-    fn enter(&self, new: u32) -> SavedState<R> {
-        let prior_rank = self.current_rank.replace(new);
-        assert!(prior_rank < new);
-        SavedState {
-            prior_rank,
-            _rank_type: PhantomData,
-        }
+    fn enter(new_rank: R) -> SavedState<R> {
+        let prior_rank = R::CURRENT_RANK.with(|state| state.current_rank.replace(new_rank.clone()));
+        assert!(prior_rank < new_rank);
+        SavedState { prior_rank }
     }
-}
 
-struct SavedState<R: Rank> {
-    prior_rank: u32,
-    _rank_type: PhantomData<R>,
-}
-
-impl<R: Rank> Drop for SavedState<R> {
-    fn drop(&mut self) {
+    fn exit(prior_rank: R) {
         R::CURRENT_RANK.with(|state| {
-            state.current_rank.set(self.prior_rank);
+            state.current_rank.set(prior_rank);
         });
     }
 }
 
-pub trait Rank: Into<u32> + PartialOrd + 'static {
-    const CURRENT_RANK: &'static std::thread::LocalKey<ThreadState<Self>>;
+struct SavedState<R: Rank> {
+    prior_rank: R,
 }
 
-pub struct Mutex<T, R: Rank, const RANK: u32> {
+impl<R: Rank> Drop for SavedState<R> {
+    fn drop(&mut self) {
+        ThreadState::exit(self.prior_rank.clone());
+    }
+}
+
+pub struct Mutex<T, R: Rank> {
     inner: std::sync::Mutex<T>,
-    _rank_type: PhantomData<R>,
+    rank: R,
 }
 
 pub struct MutexGuard<'a, T: 'a, R: Rank> {
     inner: std::sync::MutexGuard<'a, T>,
-    
+
     #[allow(dead_code)] // held for its `Drop`
     saved_state: SavedState<R>,
 }
 
-impl<T, R: Rank, const RANK: u32> Mutex<T, R, RANK> {
-    pub fn new(value: T) -> Self {
+impl<T, R: Rank> Mutex<T, R> {
+    pub fn new(value: T, rank: R) -> Self {
         Mutex {
             inner: std::sync::Mutex::new(value),
-            _rank_type: PhantomData,
+            rank,
         }
     }
 
     pub fn lock(&self) -> std::sync::LockResult<MutexGuard<T, R>> {
-        let saved_state = R::CURRENT_RANK.with(|state| state.enter(RANK));
+        let saved_state = ThreadState::enter(self.rank.clone());
         match self.inner.lock() {
-            Ok(inner) => Ok(MutexGuard {
-                inner,
+            Ok(inner) => Ok(MutexGuard { inner, saved_state }),
+            Err(inner_poison_error) => Err(std::sync::PoisonError::new(MutexGuard {
+                inner: inner_poison_error.into_inner(),
                 saved_state,
-            }),
-            Err(inner_poison_error) => {
-                Err(std::sync::PoisonError::new(MutexGuard {
-                    inner: inner_poison_error.into_inner(),
-                    saved_state,
-                }))
-            }
+            })),
         }
     }
 }
@@ -114,6 +106,34 @@ impl<'a, T, R: Rank> std::ops::Deref for MutexGuard<'a, T, R> {
 
 impl<'a, T, R: Rank> std::ops::DerefMut for MutexGuard<'a, T, R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.deref_mut ()
+        self.inner.deref_mut()
+    }
+}
+
+#[macro_export]
+macro_rules! define_rank {
+    {
+        $( #[ $( $current_attr:meta ),* ] )*
+        static $current_rank:ident;
+    
+        $( #[ $( $type_attr:meta ),* ] )*
+        enum $rank_type:ident {
+            $( $variant:ident, )*
+        }
+    } => {
+        $( #[ $( $type_attr ),* ] )*
+        enum $rank_type {
+            #[default]
+            $( $variant ),*
+        }
+
+        thread_local! {
+            $( #[ $( $current_attr ),* ] )*
+            static $current_rank: $crate::ThreadState<$rank_type> = $crate::ThreadState::new($rank_type::default());
+        }
+
+        impl $crate::Rank for $rank_type {
+            const CURRENT_RANK: &'static std::thread::LocalKey<$crate::ThreadState<Self>> = &$current_rank;
+        }
     }
 }
