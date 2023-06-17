@@ -24,7 +24,7 @@
 //! the highest rank of lock that each thread currently holds, and
 //! panic if a thread violates the order. You specify the ranking, in
 //! the form of an enum that implements [`PartialOrd`], [`Clone`], and
-//! [`Default`]. You indicate the rank of each lock when you create
+//! [`Into<u32>`]. You indicate the rank of each lock when you create
 //! it.
 //!
 //! Note that this analysis is strictly thread-local, evaluating each
@@ -39,15 +39,15 @@
 //!     thread may only acquire a lock whose rank is higher than any other lock
 //!     it is already holding. Use this crate's `define_rank!` macro to
 //!     define an `enum` representing that ranking:
-//! 
+//!
 //!         ordered_mutex::define_rank! {
 //!             /// Thread-local variable holding each thread's current GPU lock rank.
 //!             static GPU_RANK;
-//! 
+//!
 //!             /// Order in which GPU locks must be acquired.
-//!             #[derive(Clone, Default, PartialOrd, PartialEq)]
+//!             #[repr(u32)]
+//!             #[derive(Clone, PartialOrd, PartialEq)]
 //!             enum GPULockRank {
-//!                 Nothing,
 //!                 DeviceTracker,
 //!                 BufferMapState,
 //!             }
@@ -57,18 +57,23 @@
 //!     variable named `GPU_RANK`, and implements this crate's
 //!     [`Rank`] trait for `GPULockRank`.
 //!
-//!     The enum must have a default value that represents "no locks held",
-//!     like `Nothing` in the example above.
+//!     Note that the rank enum must implement the standard library's
+//!     [`Clone`] and [`PartialOrd`] traits.
 //!
-//!     Note that the rank enum must implement the standard library
-//!     [`Clone`], [`Default`], and [`PartialOrd`] traits.
+//!     Further, to simplify implementation, the rank enum must
+//!     implement `Into<u32>`, and variants must have values less than
+//!     64. The `define_rank!` macro requires that the enum be
+//!     convertable to `u32` via the `as` operator, and generates an
+//!     implementation of `From<u32>` for it automatically; this
+//!     effectively requires the enum to use `#[repr(u32)]`, as shown
+//!     in the example.
 //!
 //! 2)  Use this crate's [`Mutex`] and [`RwLock`] types to protect your data structures,
 //!     supplying your rank type as a second generic parameter:
 //!
 //!         # ordered_mutex::define_rank! {
 //!         #     static GPU_RANK;
-//!         #     #[derive(Clone, Default, PartialOrd, PartialEq)]
+//!         #     #[derive(Clone, PartialOrd, PartialEq)]
 //!         #     enum GPULockRank { Nothing, DeviceTracker, BufferMapState, }
 //!         # }
 //!         # struct Tracker;
@@ -89,7 +94,7 @@
 //!
 //!         # ordered_mutex::define_rank! {
 //!         #     static GPU_RANK;
-//!         #     #[derive(Clone, Default, PartialOrd, PartialEq)]
+//!         #     #[derive(Clone, PartialOrd, PartialEq)]
 //!         #     enum GPULockRank { Nothing, DeviceTracker, BufferMapState, }
 //!         # }
 //!         # use ordered_mutex::Mutex;
@@ -135,7 +140,7 @@
 //! In general, any lock that is never held while trying to acquire
 //! another lock cannot participate in a deadlock. This is the
 //! category that atomics fall into.
-//! 
+//!
 //! # Lock ranks are not very modular
 //!
 //! It can be tricky to establish the boundaries of the code that must
@@ -187,46 +192,54 @@
 //! using numbers for ranks seems bad. The unstable
 //! `"adt_const_params"` feature would relax this restriction, but it
 //! doesn't seem to be a priority.
- 
-use std::cell::Cell;
 
-pub trait Rank: Clone + Default + PartialOrd + Sized + 'static {
+use std::cell::RefCell;
+
+mod rank_set;
+
+use rank_set::RankSet;
+
+pub trait Rank: PartialOrd + Into<u32> + Clone + Sized + 'static {
     const CURRENT_RANK: &'static std::thread::LocalKey<ThreadState<Self>>;
 }
 
 pub struct ThreadState<R> {
-    current_rank: Cell<R>,
+    current_rank: RefCell<RankSet<R>>,
 }
 
 impl<R: Rank> ThreadState<R> {
-    pub const fn new(init: R) -> Self {
+    pub const fn new() -> Self {
         ThreadState {
-            current_rank: Cell::new(init),
+            current_rank: RefCell::new(RankSet::new()),
         }
     }
 }
 
 impl<R: Rank> ThreadState<R> {
-    fn lock(new_rank: R) -> SavedState<R> {
-        let prior_rank = R::CURRENT_RANK.with(|state| state.current_rank.replace(new_rank.clone()));
-        assert!(prior_rank < new_rank);
-        SavedState { prior_rank }
+    fn lock(rank: R) -> SavedState<R> {
+        R::CURRENT_RANK.with(|state| {
+            assert!(
+                !state.current_rank.borrow_mut().insert(rank.clone()),
+                "Attempted to acquire lock out of order"
+            );
+        });
+        SavedState { rank }
     }
 
-    fn unlock(prior_rank: R) {
+    fn unlock(rank: R) {
         R::CURRENT_RANK.with(|state| {
-            state.current_rank.set(prior_rank);
+            state.current_rank.borrow_mut().remove(rank);
         });
     }
 }
 
 struct SavedState<R: Rank> {
-    prior_rank: R,
+    rank: R,
 }
 
 impl<R: Rank> Drop for SavedState<R> {
     fn drop(&mut self) {
-        ThreadState::unlock(self.prior_rank.clone());
+        ThreadState::unlock(self.rank.clone());
     }
 }
 
@@ -281,7 +294,7 @@ macro_rules! define_rank {
     {
         $( #[ $( $current_attr:meta ),* ] )*
         static $current_rank:ident;
-    
+
         $( #[ $( $type_attr:meta ),* ] )*
         enum $rank_type:ident {
             $( $variant:ident, )*
@@ -289,17 +302,20 @@ macro_rules! define_rank {
     } => {
         $( #[ $( $type_attr ),* ] )*
         enum $rank_type {
-            #[default]
             $( $variant ),*
         }
 
         thread_local! {
             $( #[ $( $current_attr ),* ] )*
-            static $current_rank: $crate::ThreadState<$rank_type> = $crate::ThreadState::new($rank_type::default());
+            static $current_rank: $crate::ThreadState<$rank_type> = $crate::ThreadState::new();
         }
 
         impl $crate::Rank for $rank_type {
             const CURRENT_RANK: &'static std::thread::LocalKey<$crate::ThreadState<Self>> = &$current_rank;
+        }
+
+        impl From<$rank_type> for u32 {
+            fn from(value: $rank_type) -> u32 { value as _ }
         }
     }
 }

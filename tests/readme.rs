@@ -3,9 +3,9 @@ ordered_mutex::define_rank! {
     static GPU_RANK;
 
     /// Order in which GPU locks must be acquired.
-    #[derive(Clone, Default, PartialOrd, PartialEq)]
+    #[repr(u32)]
+    #[derive(Clone, PartialOrd, PartialEq)]
     enum GPULockRank {
-        Nothing,
         DeviceTracker,
         BufferMapState,
     }
@@ -66,4 +66,37 @@ fn out_of_order() {
 
     let _map_state_guard = buffer.map_state.lock().unwrap();
     let _tracker_guard = device.tracker.lock().unwrap();
+}
+
+// Dropping lock guards out of order should still clear the state.
+#[test]
+fn staggered_clear() {
+    let tracker: Mutex<(), GPULockRank> = Mutex::new((), GPULockRank::DeviceTracker);
+    let map_state: Mutex<(), GPULockRank> = Mutex::new((), GPULockRank::BufferMapState);
+
+    let tracker_guard = tracker.lock().unwrap();
+    let map_state_guard = map_state.lock().unwrap();
+
+    // Dropping the higher-ranked guard should return the thread to a
+    // holding-no-locks state.
+    drop(tracker_guard);
+    drop(map_state_guard);
+
+    let _second_tracker_guard = tracker.lock().unwrap();
+}
+
+// Dropping lock guards out of order should retain other guards.
+#[test]
+#[should_panic]
+fn staggered_retain() {
+    let tracker: Mutex<(), GPULockRank> = Mutex::new((), GPULockRank::DeviceTracker);
+    let map_state: Mutex<(), GPULockRank> = Mutex::new((), GPULockRank::BufferMapState);
+
+    let tracker_guard = tracker.lock().unwrap();
+    let _map_state_guard = map_state.lock().unwrap();
+
+    // Dropping the lower-ranked guard should not remove the
+    // higher-ranked guard.
+    drop(tracker_guard);
+    let _second_tracker_guard = tracker.lock().unwrap();
 }
