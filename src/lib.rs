@@ -1,6 +1,9 @@
-//! This crate provides wrappers around ordinary `Mutex` and `RwLock`
+//! This crate provides wrappers around ordinary [`Mutex`] and [`RwLock`]
 //! types that prevent deadlocks, by checking at runtime that locks are
 //! acquired in a predetermined order.
+//!
+//! [`Mutex`]: std::sync::Mutex
+//! [`RwLock`]: std::sync::RwLock
 //!
 //! # Deadlock prevention
 //!
@@ -20,7 +23,7 @@
 //! locks it already holds. This prevents any such cycles from
 //! forming.
 //!
-//! This crate provides wrappers for `Mutex` and `RwLock` that track
+//! This crate provides wrappers for [`Mutex`] and [`RwLock`] that track
 //! the highest rank of lock that each thread currently holds, and
 //! panic if a thread violates the order. You specify the ranking, in
 //! the form of an enum that implements [`PartialOrd`], [`Clone`], and
@@ -118,12 +121,12 @@
 //!
 //! # Parking lot
 //!
-//! At the moment, this crate simply wraps the [`parking_lot`] crate's
-//! locks, but there's nothing about this instrumentation that is
-//! specific to `parking_lot`. In the future, this crate should
-//! provide generic types that can wrap any lock that provides the
-//! necessary interfaces. And it should support both `parking_lot` and
-//! the Rust standard library's locks out of the box.
+//! At the moment, this crate simply wraps the standard library's locks,
+//! but there's nothing about this instrumentation that is specific to
+//! those. In the future, this crate should provide generic types that can
+//! wrap any lock that provides the necessary interfaces. And it should
+//! support both `parking_lot` and the Rust standard library's locks out
+//! of the box.
 //!
 //! # Why not atomics?
 //!
