@@ -47,20 +47,20 @@ of how threads' execution interleaves.
     it is already holding. Use this crate's `define_rank!` macro to
     define an `enum` representing that ranking:
 
-```rust
-ordered_mutex::define_rank! {
-    /// Thread-local variable holding each thread's current GPU lock rank.
-    static GPU_RANK;
+    ```rust
+    ordered_mutex::define_rank! {
+        /// Thread-local variable holding each thread's current GPU lock rank.
+        static GPU_RANK;
 
-    /// Order in which GPU locks must be acquired.
-    #[repr(u32)]
-    #[derive(Clone, PartialOrd, PartialEq)]
-    enum GPULockRank {
-        DeviceTracker,
-        BufferMapState,
+        /// Order in which GPU locks must be acquired.
+        #[repr(u32)]
+        #[derive(Clone, PartialOrd, PartialEq)]
+        enum GPULockRank {
+            DeviceTracker,
+            BufferMapState,
+        }
     }
-}
-```
+    ```
 
     This defines the `GPULockRank` enum, declares a thread-local
     variable named `GPU_RANK`, and implements this crate's
@@ -80,33 +80,33 @@ ordered_mutex::define_rank! {
 2)  Use this crate's [`Mutex`] and [`RwLock`] types to protect your data structures,
     supplying your rank type as a second generic parameter:
 
-```rust
-use ordered_mutex::Mutex;
+    ```rust
+    use ordered_mutex::Mutex;
 
-struct Device {
-    tracker: Mutex<Tracker, GPULockRank>,
-    // ...
-}
+    struct Device {
+        tracker: Mutex<Tracker, GPULockRank>,
+        // ...
+    }
 
-struct Buffer {
-    map_state: Mutex<BufferMapState, GPULockRank>,
-    // ...
-}
-```
+    struct Buffer {
+        map_state: Mutex<BufferMapState, GPULockRank>,
+        // ...
+    }
+    ```
 
 3)  Supply each lock's rank when you create it:
 
-```rust
-let device = Device {
-    tracker: Mutex::new(Tracker, GPULockRank::DeviceTracker),
-    // ...
-};
+    ```rust
+    let device = Device {
+        tracker: Mutex::new(Tracker, GPULockRank::DeviceTracker),
+        // ...
+    };
 
-let buffer = Buffer {
-    map_state: Mutex::new(BufferMapState, GPULockRank::BufferMapState),
-    // ...
-};
-```
+    let buffer = Buffer {
+        map_state: Mutex::new(BufferMapState, GPULockRank::BufferMapState),
+        // ...
+    };
+    ```
 
 4)  Acquire and release locks as usual. If any thread ever tries to
     acquire a lower-ranked lock while holding a higher-ranked
