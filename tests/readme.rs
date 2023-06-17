@@ -4,7 +4,7 @@ ordered_mutex::define_rank! {
 
     /// Order in which GPU locks must be acquired.
     #[derive(Clone, Default, PartialOrd, PartialEq)]
-    enum GPULockOrder {
+    enum GPULockRank {
         Nothing,
         DeviceTracker,
         BufferMapState,
@@ -17,40 +17,40 @@ struct BufferMapState;
 use ordered_mutex::Mutex;
 
 struct Device {
-    tracker: Mutex<Tracker, GPULockOrder>,
+    tracker: Mutex<Tracker, GPULockRank>,
     // ...
 }
 
 struct Buffer {
-    map_state: Mutex<BufferMapState, GPULockOrder>,
+    map_state: Mutex<BufferMapState, GPULockRank>,
     // ...
 }
 
 #[test]
 fn in_order() {
     let device = Device {
-        tracker: Mutex::new(Tracker, GPULockOrder::DeviceTracker),
+        tracker: Mutex::new(Tracker, GPULockRank::DeviceTracker),
     };
     let buffer = Buffer {
-        map_state: Mutex::new(BufferMapState, GPULockOrder::BufferMapState),
+        map_state: Mutex::new(BufferMapState, GPULockRank::BufferMapState),
     };
 
     {
-        let _tracker_guard = device.tracker.lock();
-        let _map_state_guard = buffer.map_state.lock();
+        let _tracker_guard = device.tracker.lock().unwrap();
+        let _map_state_guard = buffer.map_state.lock().unwrap();
     }
 
     {
-        let _map_state_guard = buffer.map_state.lock();
+        let _map_state_guard = buffer.map_state.lock().unwrap();
     }
 
     {
-        let _tracker_guard = device.tracker.lock();
+        let _tracker_guard = device.tracker.lock().unwrap();
     }
 
     {
-        let _tracker_guard = device.tracker.lock();
-        let _map_state_guard = buffer.map_state.lock();
+        let _tracker_guard = device.tracker.lock().unwrap();
+        let _map_state_guard = buffer.map_state.lock().unwrap();
     }
 }
 
@@ -58,12 +58,12 @@ fn in_order() {
 #[should_panic]
 fn out_of_order() {
     let device = Device {
-        tracker: Mutex::new(Tracker, GPULockOrder::DeviceTracker),
+        tracker: Mutex::new(Tracker, GPULockRank::DeviceTracker),
     };
     let buffer = Buffer {
-        map_state: Mutex::new(BufferMapState, GPULockOrder::BufferMapState),
+        map_state: Mutex::new(BufferMapState, GPULockRank::BufferMapState),
     };
 
-    let _map_state_guard = buffer.map_state.lock();
-    let _tracker_guard = device.tracker.lock();
+    let _map_state_guard = buffer.map_state.lock().unwrap();
+    let _tracker_guard = device.tracker.lock().unwrap();
 }
